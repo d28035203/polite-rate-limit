@@ -1,11 +1,24 @@
 # Polite Rate Limit
 
-In-memory **token bucket** rate limiter for a tiny Go HTTP API.
+In-memory token-bucket rate limiter wrapped around a small Go HTTP API.
+
+- `/hello` — limited (5 tokens/sec, burst 10) per client IP
+- `/health` — unlimited liveness probe
+
+## Run
 
 ```bash
+go test ./...
 go run .
+curl -i http://127.0.0.1:8080/hello
 ```
 
-Returns 429 when you are rude. Multi-replica → use Redis later.
+Hammer `/hello` to see `429` with `Retry-After`.
 
-MIT · 2024 · backend
+## Caveats
+
+In-memory buckets are per-process. For multiple replicas, back the bucket with Redis (or an edge limiter).
+
+## License
+
+MIT

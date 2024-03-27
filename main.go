@@ -1,8 +1,10 @@
-// polite-rate-limit — token bucket middleware demo
+// polite-rate-limit — token-bucket rate limiter in front of a tiny HTTP API
 package main
 
 import (
-	"fmt"
+	"encoding/json"
+	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -28,6 +30,7 @@ func NewBucket(rate, burst float64) *Bucket {
 func (b *Bucket) Allow(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	now := time.Now()
 	t, ok := b.tokens[key]
 	if !ok {
@@ -35,6 +38,7 @@ func (b *Bucket) Allow(key string) bool {
 		b.last[key] = now
 		return true
 	}
+
 	elapsed := now.Sub(b.last[key]).Seconds()
 	t += elapsed * b.rate
 	if t > b.burst {
@@ -49,17 +53,41 @@ func (b *Bucket) Allow(key string) bool {
 	return true
 }
 
-func main() {
-	lim := NewBucket(5, 10)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-		if !lim.Allow(r.RemoteAddr) {
+func clientKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func withLimit(b *Bucket, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !b.Allow(clientKey(r)) {
+			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "1")
-			http.Error(w, `{"error":"slow down, friend"}`, http.StatusTooManyRequests)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "rate limit exceeded"})
 			return
 		}
-		fmt.Fprintln(w, `{"msg":"hello, politely"}`)
+		next(w, r)
+	}
+}
+
+func main() {
+	// 5 tokens/sec refill, burst 10
+	lim := NewBucket(5, 10)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hello", withLimit(lim, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"msg": "hello"})
+	}))
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
-	fmt.Println("listening on :8080")
-	http.ListenAndServe(":8080", mux)
+
+	addr := ":8080"
+	log.Printf("listening on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
 }
